@@ -1,174 +1,265 @@
 #!/bin/bash
 
-# ==============================================================
-#  LAMMPS with ML-IAP (MACE + Kokkos Multi-GPU) Installation Script
-#  Target system: CSC Mahti GPU partition
-#  Usage: ./install_lammps_mliap.sh <username> <project_name>
-# ==============================================================
+# LAMMPS with Kokkos and MACE Installation Script for CSC Mahti
+# Usage: ./install_lammps_kokkos_mace.sh <username>
 
-set -e  # Exit on error
+set -e  # Exit on any error
 
-# -------------------------------
-#  Colors for better readability
-# -------------------------------
+# Color codes for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-print_status() { echo -e "${BLUE}[INFO]${NC} $1"; }
-print_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
-print_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
-print_error() { echo -e "${RED}[ERROR]${NC} $1"; }
+# Function to print colored output
+print_status() {
+    echo -e "${BLUE}[INFO]${NC} $1"
+}
 
-# -------------------------------
-#  Check user input
-# -------------------------------
-if [ $# -lt 2 ]; then
-    print_error "Usage: $0 <username> <project_name>"
+print_success() {
+    echo -e "${GREEN}[SUCCESS]${NC} $1"
+}
+
+print_warning() {
+    echo -e "${YELLOW}[WARNING]${NC} $1"
+}
+
+print_error() {
+    echo -e "${RED}[ERROR]${NC} $1"
+}
+
+# Check if username is provided
+if [ $# -eq 0 ]; then
+    print_error "No username provided!"
+    echo "Usage: $0 <username> [project_name]"
+    echo "Example: $0 myusername myproject"
+    echo "Or set CSC_PROJECT environment variable: export CSC_PROJECT=myproject"
     exit 1
 fi
 
 USERNAME=$1
-PROJECT_NAME=$2
 
-print_status "Starting LAMMPS-MLIAP installation for user: $USERNAME (project: $PROJECT_NAME)"
+# Get project name from parameter or environment variable
+if [ $# -ge 2 ]; then
+    PROJECT_NAME=$2
+elif [ -n "$CSC_PROJECT" ]; then
+    PROJECT_NAME=$CSC_PROJECT
+else
+    print_error "No project name provided!"
+    echo "Please provide project name as second parameter or set CSC_PROJECT environment variable"
+    echo "Usage: $0 <username> <project_name>"
+    echo "Example: $0 myusername myproject"
+    echo "Or: export CSC_PROJECT=myproject && $0 myusername"
+    exit 1
+fi
 
-# -------------------------------
-#  Set up environment paths
-# -------------------------------
-export PROJAPPL="/projappl/$PROJECT_NAME/$USERNAME/LAMMPS-MLIAP"
-export TMPDIR=${TMPDIR:-/tmp}
+print_status "Starting LAMMPS-KOKKOS-MACE installation for user: $USERNAME (project: $PROJECT_NAME)"
 
-print_status "Installation directory: $PROJAPPL"
-print_status "Temporary directory: $TMPDIR"
+# Set up environment variables
+print_status "Setting up environment variables..."
+export PROJAPPL="/projappl/$PROJECT_NAME/$USERNAME/LAMMPS-KOKKOS"
 
+print_status "Installation will be performed in: $PROJAPPL"
+
+# Check if TMPDIR is available
+if [ -z "$TMPDIR" ]; then
+    print_warning "TMPDIR not set, using /tmp"
+    export TMPDIR="/tmp"
+fi
+
+print_status "Using temporary directory: $TMPDIR"
+
+# Create installation directory first
+print_status "Creating base installation directory..."
 mkdir -p $PROJAPPL
+if [ $? -ne 0 ]; then
+    print_error "Failed to create base installation directory: $PROJAPPL"
+    print_error "Please check if you have write permissions to the projappl directory"
+    exit 1
+fi
 
-# -------------------------------
-#  Load Mahti environment modules
-# -------------------------------
-print_status "Loading required Mahti modules..."
-module purge
-module load gcc/11.2.0 openmpi/4.1.2 fftw/3.3.10-mpi cuda/11.5.0 cudnn/8.3.3.40-11.5 intel-oneapi-mkl/2021.4.0
-print_success "Modules loaded."
+# Download and install libtorch
+print_status "Downloading and installing libtorch..."
+cd $PROJAPPL
 
-# -------------------------------
-#  Python virtual environment
-# -------------------------------
-print_status "Setting up Python virtual environment for MACE + ML-IAP..."
-python3 -m venv $PROJAPPL/venv
-source $PROJAPPL/venv/bin/activate
+# Check if libtorch already exists
+if [ -d "libtorch" ]; then
+    print_warning "libtorch directory already exists. Skipping download..."
+else
+    print_status "Downloading libtorch (this may take a while)..."
+    wget https://download.pytorch.org/libtorch/cu115/libtorch-cxx11-abi-shared-with-deps-1.11.0%2Bcu115.zip
+    
+    if [ $? -ne 0 ]; then
+        print_error "Failed to download libtorch"
+        exit 1
+    fi
+    
+    print_status "Extracting libtorch..."
+    unzip libtorch-cxx11-abi-shared-with-deps-1.11.0+cu115.zip
+    
+    if [ $? -ne 0 ]; then
+        print_error "Failed to extract libtorch"
+        exit 1
+    fi
+    
+    # Clean up zip file
+    rm -f libtorch-cxx11-abi-shared-with-deps-1.11.0+cu115.zip
+    
+    print_success "libtorch installed successfully"
+fi
 
-pip install --upgrade pip wheel setuptools
-pip install torch==2.4.0 cupy-cuda12x cuequivariance cuequivariance-torch cuequivariance-ops-torch-cu12 numpy<2
-
-print_success "Python environment and dependencies installed."
-
-# -------------------------------
-#  Get LAMMPS (develop branch)
-# -------------------------------
+# Navigate to temporary directory
+print_status "Changing to temporary directory..."
 cd $TMPDIR
+
+# Navigate to temporary directory
+print_status "Changing to temporary directory..."
+cd $TMPDIR
+
+# Download and unpack LAMMPS
+print_status "Downloading LAMMPS from ACEsuit repository (MACE branch)..."
 if [ -d "lammps" ]; then
-    print_warning "Removing existing lammps directory..."
+    print_warning "LAMMPS directory already exists. Removing it..."
     rm -rf lammps
 fi
 
-print_status "Cloning official LAMMPS develop branch..."
 git clone --branch=develop --depth=1 https://github.com/lammps/lammps
-cd lammps
-print_success "LAMMPS source downloaded."
+if [ $? -ne 0 ]; then
+    print_error "Failed to clone LAMMPS repository"
+    exit 1
+fi
 
-# -------------------------------
-#  Configure Kokkos preset
-# -------------------------------
-print_status "Setting up Kokkos GPU preset..."
-mkdir -p cmake/presets
-cat << EOF > cmake/presets/mahti-gpu.cmake
-set(Kokkos_ENABLE_CUDA ON CACHE BOOL "")
-set(Kokkos_ENABLE_CUDA_UVM ON CACHE BOOL "")
-set(Kokkos_ENABLE_OPENMP ON CACHE BOOL "")
-set(Kokkos_ARCH_AMPERE80 ON CACHE BOOL "")
-EOF
-print_success "Kokkos GPU preset configured for NVIDIA A100."
+print_success "LAMMPS repository cloned successfully"
 
-# -------------------------------
-#  Create build directory
-# -------------------------------
+# Enter LAMMPS directory
+cd lammps/
+
+# Copy cmake preset file
+print_status "Copying cmake preset file for Mahti..."
+cp /appl/soft/chem/lammps/custom/mahti-gpu.cmake cmake/presets/
+if [ $? -ne 0 ]; then
+    print_error "Failed to copy mahti-gpu.cmake preset file"
+    exit 1
+fi
+
+print_success "CMake preset file copied successfully"
+
+# Create build directory
+print_status "Creating build directory..."
 mkdir -p build
 cd build
 
-# -------------------------------
-#  Configure CMake for ML-IAP
-# -------------------------------
-print_status "Configuring LAMMPS with ML-IAP + Kokkos multi-GPU..."
+# Purge and load required modules
+print_status "Loading required modules..."
+module purge
+module load gcc/11.2.0 openmpi/4.1.2 fftw/3.3.10-mpi cuda/11.5.0 cudnn/8.3.3.40-11.5 .unsupported intel-oneapi-mkl/2021.4.0
+
+if [ $? -ne 0 ]; then
+    print_error "Failed to load required modules"
+    exit 1
+fi
+
+print_success "Modules loaded successfully"
+
+# Create installation directory
+print_status "Creating installation directory..."
+mkdir -p $PROJAPPL/lammps-mliap
+if [ $? -ne 0 ]; then
+    print_error "Failed to create installation directory: $PROJAPPL/lammps-mliap"
+    print_error "Please check if you have write permissions to the projappl directory"
+    exit 1
+fi
+
+print_success "Installation directory created: $PROJAPPL/lammps-mliap"
+
+# Configure CMake
+print_status "Configuring CMake build..."
 cmake ../cmake \
   -C ../cmake/presets/basic.cmake \
   -C ../cmake/presets/mahti-gpu.cmake \
-  -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_INSTALL_PREFIX=$PROJAPPL/lammps-mliap \
-  -DBUILD_MPI=ON \
-  -DPKG_KOKKOS=ON \
+  -DCMAKE_PREFIX_PATH=$PROJAPPL/libtorch \
   -DPKG_ML-IAP=ON \
   -DPKG_ML-SNAP=ON \
   -DPKG_PYTHON=ON \
   -DMLIAP_ENABLE_PYTHON=ON \
-  -DBUILD_SHARED_LIBS=ON
+  -DBUILD_SHARED_LIBS=ON \
 
-print_success "CMake configuration complete."
 
-# -------------------------------
-#  Build & Install
-# -------------------------------
-print_status "Building LAMMPS (this may take several minutes)..."
-make -j 8
-print_success "LAMMPS built successfully."
-
-print_status "Installing LAMMPS..."
-make install
-print_success "LAMMPS installed."
-
-print_status "Installing LAMMPS Python package..."
-make install-python
-print_success "LAMMPS Python package installed."
-
-# -------------------------------
-#  Verify installation
-# -------------------------------
-if [ -f "$PROJAPPL/lammps-mliap/bin/lmp" ]; then
-    print_success "LAMMPS executable found: $PROJAPPL/lammps-mliap/bin/lmp"
-else
-    print_error "LAMMPS executable not found — installation may have failed."
+if [ $? -ne 0 ]; then
+    print_error "CMake configuration failed"
     exit 1
 fi
 
-# -------------------------------
-#  Installation Summary
-# -------------------------------
+print_success "CMake configuration completed successfully"
+
+# Build LAMMPS
+print_status "Building LAMMPS (this may take a while)..."
+make -j 4
+
+if [ $? -ne 0 ]; then
+    print_error "LAMMPS build failed"
+    exit 1
+fi
+
+print_success "LAMMPS built successfully"
+
+# Install LAMMPS
+print_status "Installing LAMMPS..."
+make install
+
+if [ $? -ne 0 ]; then
+    print_error "LAMMPS installation failed"
+    exit 1
+fi
+
+print_success "LAMMPS installed successfully"
+
+# Verify installation
+print_status "Verifying installation..."
+if [ -f "$PROJAPPL/lammps-mliap/bin/lmp" ]; then
+    print_success "LAMMPS executable found at: $PROJAPPL/lammps-mliap/bin/lmp"
+else
+    print_error "LAMMPS executable not found. Installation may have failed."
+    exit 1
+fi
+
+# Print installation summary
 echo ""
-echo "=============================================================="
-print_success "LAMMPS-MLIAP (MACE + Multi-GPU) INSTALLED SUCCESSFULLY!"
-echo "=============================================================="
+echo "================================================================"
+print_success "LAMMPS-KOKKOS-MACE INSTALLATION COMPLETED SUCCESSFULLY!"
+echo "================================================================"
 echo ""
-echo "Installation Summary:"
+echo "Installation Details:"
 echo "  Username: $USERNAME"
 echo "  Project: $PROJECT_NAME"
-echo "  LAMMPS Path: $PROJAPPL/lammps-mliap"
-echo "  Python venv: $PROJAPPL/venv"
+echo "  Installation Path: $PROJAPPL/lammps-mliap"
 echo "  Executable: $PROJAPPL/lammps-mliap/bin/lmp"
 echo ""
-echo "To use LAMMPS with ML-IAP:"
-echo "  module purge"
-echo "  module load gcc/11.2.0 openmpi/4.1.2 fftw/3.3.10-mpi cuda/11.5.0 cudnn/8.3.3.40-11.5 intel-oneapi-mkl/2021.4.0"
-echo "  source $PROJAPPL/venv/bin/activate"
-echo "  export PATH=$PROJAPPL/lammps-mliap/bin:\$PATH"
+echo "To use lammps-mliap in your job scripts:"
+echo "  1. Load the required modules:"
+echo "     module purge"
+echo "     module load gcc/11.2.0 openmpi/4.1.2 fftw/3.3.10-mpi cuda/11.5.0 cudnn/8.3.3.40-11.5 .unsupported intel-oneapi-mkl/2021.4.0"
 echo ""
-echo "Example run command (multi-GPU):"
-echo "  mpirun -np 2 lmp -k on g 2 -sf kk -pk kokkos newton on neigh half -in input.in"
+echo "  2. Set the path to your LAMMPS installation:"
+echo "     export LAMMPS_PATH=$PROJAPPL/lammps-mliap"
 echo ""
-echo "Example LAMMPS input snippet:"
-echo "  pair_style  mliap unified your_model-mliap_lammps.pt 0"
-echo "  pair_coeff  * * C H O N"
+echo "  3. Set the path to your libtorch:"
+echo "     export LIBTORCH_DIR=$PROJAPPL/libtorch"
 echo ""
-echo "=============================================================="
+echo "  4. Ensure the directory containing libtorch.so is included in the LD_LIBRARY_PATH:"
+echo "     export LD_LIBRARY_PATH=$LIBTORCH_DIR/lib:$FFTW_INSTALL_ROOT/lib:$CUDA_INSTALL_ROOT/lib64:$LD_LIBRARY_PATH"
+echo "     export PATH=$LAMMPS_DIR/bin:$PATH"
+echo "     export OMP_NUM_THREADS=1"
+echo ""
+echo "  5. Run LAMMPS with Kokkos GPU acceleration:"
+echo "     srun -n 1 lmp -sf kk -k on g 4 -pk kokkos -in input.in"
+echo ""
+echo "Important Notes:"
+echo "  - This build supports single GPU execution only"
+echo "  - Use Mahti GPU partition for running jobs"
+echo "  - Ensure your CSC project has sufficient GPU hours"
+echo ""
+echo "For more information, see the README.md file"
+echo "================================================================"
